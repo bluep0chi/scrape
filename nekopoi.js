@@ -29,46 +29,105 @@ function decompress(buffer, encoding) {
   }
 }
 
-function requestOnce(target, { method, headers, body, timeoutMs }) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        host: target.hostname,
-        port: target.port ? Number(target.port) : 443,
-        path: `${target.pathname}${target.search}`,
-        method,
-        headers,
-        agent,
-        servername: target.hostname,
-      },
-      (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
+const DNS_SERVERS = [
+  { host: "1.1.1.1", path: "/dns-query" },
+  { host: "8.8.8.8", path: "/resolve" },
+];
+const dnsCache = new Map();
+let useDoh = false;
+
+function resolveDoh(hostname) {
+  const cached = dnsCache.get(hostname);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.address);
+  const tryServer = (index) => {
+    if (index >= DNS_SERVERS.length) {
+      return Promise.reject(new Error(`gagal resolve ${hostname}`));
+    }
+    const server = DNS_SERVERS[index];
+    const options = {
+      host: server.host,
+      path: `${server.path}?name=${encodeURIComponent(hostname)}&type=A`,
+      headers: { accept: "application/dns-json" },
+      timeout: 5000,
+    };
+    return new Promise((resolve, reject) => {
+      const req = https.get(options, (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
         res.on("end", () => {
           try {
-            const raw = decompress(
-              Buffer.concat(chunks),
-              res.headers["content-encoding"],
-            );
-            resolve({
-              statusCode: res.statusCode ?? 0,
-              headers: res.headers,
-              body: raw.toString("utf8"),
-            });
+            const body = JSON.parse(data);
+            const answer = (body.Answer || []).find((r) => r.type === 1);
+            if (!answer) return reject(new Error("no A record"));
+            dnsCache.set(hostname, { address: answer.data, expiresAt: Date.now() + 60_000 });
+            resolve(answer.data);
           } catch (err) {
             reject(err);
           }
         });
-        res.on("error", reject);
-      },
-    );
-
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`timeout ${timeoutMs}ms: ${target.href}`));
+      });
+      req.on("error", () => tryServer(index + 1).then(resolve, reject));
+      req.on("timeout", () => {
+        req.destroy();
+        tryServer(index + 1).then(resolve, reject);
+      });
     });
-    req.on("error", reject);
-    if (body != null) req.write(body);
-    req.end();
+  };
+  return tryServer(0);
+}
+
+function certError(err) {
+  const msg = String(err?.message || err?.code || "");
+  return /CERT|TLS|SSL/i.test(msg) || err?.code === "ERR_TLS_CERT_ALTNAME_INVALID" || err?.cause?.code === "CERT_HAS_EXPIRED";
+}
+
+function requestOnce(target, { method, headers, body, timeoutMs }) {
+  const doRequest = (ip) =>
+    new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          host: ip || target.hostname,
+          port: target.port ? Number(target.port) : 443,
+          path: `${target.pathname}${target.search}`,
+          method,
+          headers: { ...headers, host: target.hostname },
+          agent,
+          servername: target.hostname,
+        },
+        (res) => {
+          const chunks = [];
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("end", () => {
+            try {
+              const raw = decompress(
+                Buffer.concat(chunks),
+                res.headers["content-encoding"],
+              );
+              resolve({
+                statusCode: res.statusCode ?? 0,
+                headers: res.headers,
+                body: raw.toString("utf8"),
+              });
+            } catch (err) {
+              reject(err);
+            }
+          });
+          res.on("error", reject);
+        },
+      );
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error(`timeout ${timeoutMs}ms: ${target.href}`));
+      });
+      req.on("error", reject);
+      if (body != null) req.write(body);
+      req.end();
+    });
+  return doRequest().catch((err) => {
+    if (certError(err)) {
+      useDoh = true;
+      return resolveDoh(target.hostname).then(doRequest);
+    }
+    throw err;
   });
 }
 
