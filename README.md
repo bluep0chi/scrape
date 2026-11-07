@@ -1,6 +1,6 @@
-# poatao-fixed
+# scrape
 
-Scraper Pornhub dan Nekopoi dalam satu file JS. Tanpa dependensi.
+Scraper Pornhub dan Nekopoi. Satu file per situs. Tanpa dependensi, tanpa npm install.
 
 Butuh Node.js 18+
 
@@ -46,13 +46,6 @@ node nekopoi.js detail <url>
 node nekopoi.js series <url>
 node nekopoi.js comments <path>
 node nekopoi.js all 10 out.json
-```
-
-## Test
-
-```
-node smoke-test.js --offline
-node smoke-test.js
 ```
 
 ## Catatan
