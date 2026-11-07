@@ -1,6 +1,6 @@
 # scrape
 
-Scraper Pornhub dan Nekopoi. Satu file per situs. Tanpa dependensi, tanpa npm install.
+Scraper Pornhub dan Nekopoi.
 
 Butuh Node.js 18+
 
